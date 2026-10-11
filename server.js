@@ -8,6 +8,12 @@ const cors = require("cors");
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Настройки Telegram берутся из переменных окружения (на Render: Environment).
+// TELEGRAM_BOT_TOKEN — токен бота от @BotFather
+// TELEGRAM_CHAT_ID   — ID чата или пользователя, куда приходят заявки
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || "";
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || "";
+
 // Нужно на Render: сервер стоит за прокси,
 // иначе лимит запросов будет считать все заявки с одного IP.
 app.set("trust proxy", 1);
@@ -52,6 +58,65 @@ setInterval(() => {
         if (now > entry.resetAt) hits.delete(ip);
     }
 }, RATE_WINDOW_MS).unref();
+
+// Экранирование текста для Telegram (режим HTML)
+function escapeTelegramHTML(value) {
+    return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+}
+
+// Отправка уведомления о заявке в Telegram.
+// Не бросает ошибок: если Telegram недоступен, заявка всё равно принимается.
+async function sendTelegramNotification(booking) {
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+        console.warn("Telegram не настроен: задайте TELEGRAM_BOT_TOKEN и TELEGRAM_CHAT_ID.");
+        return false;
+    }
+
+    const lines = [
+        "💇‍♀️ <b>Новая заявка с сайта AURA Beauty</b>",
+        "",
+        `<b>Имя:</b> ${escapeTelegramHTML(booking.name)}`,
+        `<b>Телефон:</b> ${escapeTelegramHTML(booking.phone)}`,
+        `<b>Услуга:</b> ${escapeTelegramHTML(booking.service)}`,
+        `<b>Мастер:</b> ${escapeTelegramHTML(booking.master)}`,
+        `<b>Дата:</b> ${escapeTelegramHTML(booking.date)}`,
+        `<b>Время:</b> ${escapeTelegramHTML(booking.time)}`
+    ];
+
+    if (booking.notes) {
+        lines.push(`<b>Комментарий:</b> ${escapeTelegramHTML(booking.notes)}`);
+    }
+
+    try {
+        const response = await fetch(
+            `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage`,
+            {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    chat_id: TELEGRAM_CHAT_ID,
+                    text: lines.join("\n"),
+                    parse_mode: "HTML"
+                }),
+                signal: AbortSignal.timeout(5000)
+            }
+        );
+
+        if (!response.ok) {
+            const details = await response.text().catch(() => "");
+            console.error(`Telegram ответил ошибкой ${response.status}:`, details);
+            return false;
+        }
+
+        return true;
+    } catch (error) {
+        console.error("Не удалось отправить уведомление в Telegram:", error.message);
+        return false;
+    }
+}
 
 // Проверка, что сервер работает
 app.get("/", (req, res) => {
@@ -110,7 +175,7 @@ function validateBooking(body) {
 }
 
 // Приём заявки
-app.post("/api/bookings", rateLimit, (req, res) => {
+app.post("/api/bookings", rateLimit, async (req, res) => {
     const { errors, data } = validateBooking(req.body || {});
 
     if (errors.length > 0) {
@@ -125,6 +190,9 @@ app.post("/api/bookings", rateLimit, (req, res) => {
 
     // Заявка выводится в консоль (на Render смотрите вкладку Logs).
     console.log("Новая заявка:", booking);
+
+    // Уведомление в Telegram (ошибка отправки не отменяет заявку)
+    await sendTelegramNotification(booking);
 
     res.status(201).json({
         ok: true,
@@ -150,4 +218,8 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, () => {
     console.log(`API запущен на порту ${PORT}`);
+
+    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
+        console.warn("TELEGRAM_BOT_TOKEN или TELEGRAM_CHAT_ID не заданы: уведомления в Telegram отключены.");
+    }
 });
