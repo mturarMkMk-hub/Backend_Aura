@@ -3,47 +3,21 @@
 // сайт размещается отдельно (например, на GitHub Pages).
 
 const express = require("express");
+const cors = require("cors");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Адреса сайтов, которым разрешено отправлять заявки (через запятую).
-// Пример: ALLOWED_ORIGINS=https://username.github.io,https://aura-beauty.kz
-// Если переменная не задана, разрешены любые сайты (удобно для локальной проверки).
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-
-// Нужно на хостингах (Render, Railway), где сервер стоит за прокси —
+// Нужно на Render: сервер стоит за прокси,
 // иначе лимит запросов будет считать все заявки с одного IP.
 app.set("trust proxy", 1);
 app.disable("x-powered-by");
 
+// CORS: разрешаем запросы с любых сайтов (в том числе с GitHub Pages).
+// Обрабатывает и предварительные OPTIONS-запросы браузера.
+app.use(cors());
+
 app.use(express.json({ limit: "10kb" }));
-
-// CORS
-app.use((req, res, next) => {
-    const origin = req.headers.origin;
-
-    if (origin) {
-        if (ALLOWED_ORIGINS.length === 0) {
-            res.setHeader("Access-Control-Allow-Origin", "*");
-        } else if (ALLOWED_ORIGINS.includes(origin)) {
-            res.setHeader("Access-Control-Allow-Origin", origin);
-            res.setHeader("Vary", "Origin");
-        }
-
-        res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-        res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
-    }
-
-    if (req.method === "OPTIONS") {
-        return res.sendStatus(204);
-    }
-
-    next();
-});
 
 // Простой лимит запросов: не больше 10 заявок за 15 минут с одного IP
 const RATE_WINDOW_MS = 15 * 60 * 1000;
@@ -149,8 +123,7 @@ app.post("/api/bookings", rateLimit, (req, res) => {
         ...data
     };
 
-    // Пока заявка просто выводится в логи сервера.
-    // Здесь позже можно добавить отправку в Telegram или запись в базу данных.
+    // Заявка выводится в консоль (на Render смотрите вкладку Logs).
     console.log("Новая заявка:", booking);
 
     res.status(201).json({
@@ -177,8 +150,4 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, () => {
     console.log(`API запущен на порту ${PORT}`);
-
-    if (ALLOWED_ORIGINS.length === 0) {
-        console.warn("ALLOWED_ORIGINS не задан: запросы принимаются с любых сайтов.");
-    }
 });
