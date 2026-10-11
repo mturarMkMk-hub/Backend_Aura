@@ -1,22 +1,41 @@
+// Чистый API-сервер: только принимает заявки с сайта.
+// Файлы сайта (index.html, style.css, script.js) он НЕ отдаёт —
+// сайт размещается отдельно (например, на GitHub Pages).
+
 const express = require("express");
-const path = require("path");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Если фронтенд лежит на другом домене (например, GitHub Pages),
-// укажите его в переменной окружения ALLOWED_ORIGIN,
-// например: https://username.github.io
-const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || "";
+// Адреса сайтов, которым разрешено отправлять заявки (через запятую).
+// Пример: ALLOWED_ORIGINS=https://username.github.io,https://aura-beauty.kz
+// Если переменная не задана, разрешены любые сайты (удобно для локальной проверки).
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+// Нужно на хостингах (Render, Railway), где сервер стоит за прокси —
+// иначе лимит запросов будет считать все заявки с одного IP.
+app.set("trust proxy", 1);
+app.disable("x-powered-by");
 
 app.use(express.json({ limit: "10kb" }));
 
-// CORS (нужен только если сайт и сервер на разных адресах)
+// CORS
 app.use((req, res, next) => {
-    if (ALLOWED_ORIGIN) {
-        res.setHeader("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
+    const origin = req.headers.origin;
+
+    if (origin) {
+        if (ALLOWED_ORIGINS.length === 0) {
+            res.setHeader("Access-Control-Allow-Origin", "*");
+        } else if (ALLOWED_ORIGINS.includes(origin)) {
+            res.setHeader("Access-Control-Allow-Origin", origin);
+            res.setHeader("Vary", "Origin");
+        }
+
         res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-        res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+        res.setHeader("Access-Control-Allow-Methods", "POST, GET, OPTIONS");
     }
 
     if (req.method === "OPTIONS") {
@@ -26,25 +45,50 @@ app.use((req, res, next) => {
     next();
 });
 
-// Отдаём только файлы сайта (server.js и package.json остаются закрытыми)
+// Простой лимит запросов: не больше 10 заявок за 15 минут с одного IP
+const RATE_WINDOW_MS = 15 * 60 * 1000;
+const RATE_MAX = 10;
+const hits = new Map();
+
+function rateLimit(req, res, next) {
+    const now = Date.now();
+    const entry = hits.get(req.ip);
+
+    if (!entry || now > entry.resetAt) {
+        hits.set(req.ip, { count: 1, resetAt: now + RATE_WINDOW_MS });
+        return next();
+    }
+
+    entry.count += 1;
+
+    if (entry.count > RATE_MAX) {
+        return res.status(429).json({
+            ok: false,
+            errors: ["Слишком много запросов. Попробуйте позже."]
+        });
+    }
+
+    next();
+}
+
+// Очистка устаревших записей лимита
+setInterval(() => {
+    const now = Date.now();
+    for (const [ip, entry] of hits) {
+        if (now > entry.resetAt) hits.delete(ip);
+    }
+}, RATE_WINDOW_MS).unref();
+
+// Проверка, что сервер работает
 app.get("/", (req, res) => {
-    res.sendFile(path.join(__dirname, "index.html"));
+    res.json({ ok: true, service: "aura-beauty-api" });
 });
 
-app.get("/style.css", (req, res) => {
-    res.sendFile(path.join(__dirname, "style.css"));
-});
-
-app.get("/script.js", (req, res) => {
-    res.sendFile(path.join(__dirname, "script.js"));
-});
-
-// Проверка, что сервер жив
 app.get("/api/health", (req, res) => {
     res.json({ ok: true });
 });
 
-// Проверка данных заявки на стороне сервера
+// Проверка данных заявки
 function validateBooking(body) {
     const errors = [];
 
@@ -92,7 +136,7 @@ function validateBooking(body) {
 }
 
 // Приём заявки
-app.post("/api/bookings", (req, res) => {
+app.post("/api/bookings", rateLimit, (req, res) => {
     const { errors, data } = validateBooking(req.body || {});
 
     if (errors.length > 0) {
@@ -105,7 +149,7 @@ app.post("/api/bookings", (req, res) => {
         ...data
     };
 
-    // Пока заявка просто выводится в консоль сервера.
+    // Пока заявка просто выводится в логи сервера.
     // Здесь позже можно добавить отправку в Telegram или запись в базу данных.
     console.log("Новая заявка:", booking);
 
@@ -116,11 +160,25 @@ app.post("/api/bookings", (req, res) => {
     });
 });
 
-// Ответ на неизвестные адреса API
-app.use("/api", (req, res) => {
+// Неизвестные адреса
+app.use((req, res) => {
     res.status(404).json({ ok: false, errors: ["Не найдено."] });
 });
 
+// Ошибки (например, битый JSON в запросе)
+app.use((err, req, res, next) => {
+    if (err.type === "entity.parse.failed" || err.type === "entity.too.large") {
+        return res.status(400).json({ ok: false, errors: ["Некорректный запрос."] });
+    }
+
+    console.error(err);
+    res.status(500).json({ ok: false, errors: ["Ошибка сервера."] });
+});
+
 app.listen(PORT, () => {
-    console.log(`Сервер запущен: http://localhost:${PORT}`);
+    console.log(`API запущен на порту ${PORT}`);
+
+    if (ALLOWED_ORIGINS.length === 0) {
+        console.warn("ALLOWED_ORIGINS не задан: запросы принимаются с любых сайтов.");
+    }
 });
