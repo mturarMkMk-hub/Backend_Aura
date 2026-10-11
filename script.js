@@ -271,7 +271,7 @@ function escapeHTML(value) {
 // Адрес бэкенда. Пустая строка — сайт и сервер на одном адресе.
 // Если сайт на GitHub Pages, а сервер на Render, укажите адрес сервера,
 // например: "https://aura-beauty.onrender.com"
-const API_URL = "";
+const API_URL = "https://backend-aura-bqca.onrender.com";
 
 let isSubmitting = false;
 
